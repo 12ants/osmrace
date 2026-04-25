@@ -1,7 +1,9 @@
-import { Loader2 } from "lucide-react";
+import { Loader2, Settings } from "lucide-react";
 import React, { useState } from "react";
 import { GameStage } from "./components/GameStage";
+import { InfoBox } from "./components/InfoBox";
 import { Minimap } from "./components/Minimap";
+import { SettingsModal } from "./components/SettingsModal";
 import { fetchOSMData } from "./osm";
 import { useStore } from "./store";
 
@@ -18,6 +20,7 @@ export default function App() {
   const [latInput, setLatInput] = useState("");
   const [lonInput, setLonInput] = useState("");
   const [radiusInput, setRadiusInput] = useState("400");
+  const [showSettings, setShowSettings] = useState(false);
 
   const handleStart = async (lat: number, lon: number, name: string, radius: number = 400) => {
     setLocation(lat, lon, name);
@@ -52,6 +55,7 @@ export default function App() {
       {mapData && (
         <div className="absolute inset-0">
           <GameStage />
+          <InfoBox />
           
           {/* Immersive Overlay */}
           <div className="absolute inset-0 opacity-20 pointer-events-none" style={{ backgroundImage: "radial-gradient(#1e293b 1px, transparent 1px)", backgroundSize: "40px 40px" }}></div>
@@ -88,10 +92,22 @@ export default function App() {
                     </div>
                   </div>
                   <button 
-                    className="w-full px-4 py-2.5 bg-red-600/90 hover:bg-red-500 border border-red-500/50 rounded text-xs font-bold tracking-widest uppercase transition-all shadow-[0_0_15px_rgba(220,38,38,0.3)] hover:shadow-[0_0_20px_rgba(220,38,38,0.6)]"
+                    className="w-full px-4 py-2.5 bg-red-600/90 hover:bg-red-500 border border-red-500/50 rounded text-xs font-bold tracking-widest uppercase transition-all shadow-[0_0_15px_rgba(220,38,38,0.3)] hover:shadow-[0_0_20px_rgba(220,38,38,0.6)] mt-2"
                     onClick={() => useStore.setState({ mapData: null, location: null })}
                   >
                     Exit Mission
+                  </button>
+                  <button 
+                    className="w-full px-4 py-2.5 bg-blue-600/90 hover:bg-blue-500 border border-blue-500/50 rounded text-xs font-bold tracking-widest uppercase transition-all shadow-[0_0_15px_rgba(37,99,235,0.3)] hover:shadow-[0_0_20px_rgba(37,99,235,0.6)] mt-2"
+                    onClick={() => useStore.setState((state) => ({ freecam: !state.freecam }))}
+                  >
+                    Toggle Freecam
+                  </button>
+                  <button 
+                    className="w-full px-4 py-2.5 flex items-center justify-center gap-2 bg-emerald-600/90 hover:bg-emerald-500 border border-emerald-500/50 rounded text-xs font-bold tracking-widest uppercase transition-all shadow-[0_0_15px_rgba(16,185,129,0.3)] hover:shadow-[0_0_20px_rgba(16,185,129,0.6)] mt-2"
+                    onClick={() => setShowSettings(true)}
+                  >
+                    <Settings className="w-4 h-4" /> Settings
                   </button>
                 </div>
               </div>
@@ -170,11 +186,22 @@ export default function App() {
 
               {/* Simulated Speedometer Element */}
               <div className="flex flex-col items-end gap-6">
-                <div className="relative w-64 h-32 flex items-center justify-center">
-                  <div className="absolute inset-0 border-b-8 border-r-8 border-cyan-500/20 rounded-br-[60px]" />
+                <div className="relative w-64 h-32 flex flex-col items-end justify-center pr-6">
+                  <div className="absolute inset-0 border-b-8 border-r-8 border-emerald-500/20 rounded-br-[60px]" />
                   <div className="text-right">
                     <div id="speedOMeter" className="text-6xl font-black italic tracking-tighter leading-none w-24 tabular-nums">0</div>
-                    <div className="text-xs font-bold tracking-widest text-cyan-400 uppercase mt-1">KM/H</div>
+                    <div className="text-xs font-bold tracking-widest text-emerald-400 uppercase mt-1">KM/H</div>
+                  </div>
+                  
+                  <div className="flex gap-4 mt-6">
+                    <div className="text-right">
+                      <div id="tireTempMeter" className="text-xl font-bold tabular-nums text-orange-400">20°C</div>
+                      <div className="text-[10px] uppercase font-bold tracking-wider text-gray-500">Tire Temp</div>
+                    </div>
+                    <div className="text-right">
+                      <div id="tireWearMeter" className="text-xl font-bold tabular-nums text-green-400">100%</div>
+                      <div className="text-[10px] uppercase font-bold tracking-wider text-gray-500">Tire Wear</div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -269,6 +296,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

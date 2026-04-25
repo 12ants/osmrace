@@ -10,10 +10,13 @@ export function Car() {
   const { camera } = useThree();
   const startPos = useStore((s) => s.startPos);
   const teleportPos = useStore((s) => s.teleportPos);
+  const freecam = useStore((s) => s.freecam);
   
   const lastSpeed = useRef(0);
   const bodyRoll = useRef(0);
   const bodyPitch = useRef(0);
+  const tireTemp = useRef(20); // Celsius
+  const tireWear = useRef(1.0); // 1.0 = new, 0.1 = completely worn
   const chassisRef = useRef<THREE.Group>(null);
 
   const [ref, api] = useBox(() => ({
@@ -73,11 +76,16 @@ export function Car() {
     const localX = new THREE.Vector3(1, 0, 0).applyQuaternion(quaternion);
 
     const forwardSpeed = currentVel.dot(localZ);
-    const maxSpeed = 120; 
+    const settings = useStore.getState().settings;
+    const maxSpeed = settings.maxSpeed; 
+    const steeringSensitivity = settings.steeringSensitivity;
     
     // Acceleration calculation for weight transfer
     const accel = (speed - lastSpeed.current) / delta;
     lastSpeed.current = speed;
+
+    const lateralG = (angularVelocity.current[1] * forwardSpeed) / 9.81;
+    const longitudinalG = accel / 9.81;
 
     // Aerodynamic Drag
     const dragCoefficient = 0.05;
@@ -90,32 +98,43 @@ export function Car() {
     api.applyForce([rollForce.x, rollForce.y, rollForce.z], [0, 0, 0]);
 
     // Engine & Brakes
-    if (controls.forward && forwardSpeed < maxSpeed) {
-      const engineForce = 250000 * Math.max(0.1, 1 - (forwardSpeed / maxSpeed));
-      api.applyLocalForce([0, 0, -engineForce], [0, 0, 0]); 
-    }
-    
-    if (controls.backward) {
-      const reverseForce = forwardSpeed > 0 ? -100000 : -60000;
-      api.applyLocalForce([0, 0, -reverseForce], [0, 0, 0]);
+    if (!freecam) {
+      if (controls.forward && forwardSpeed < maxSpeed) {
+        const engineForce = 250000 * Math.max(0.1, 1 - (forwardSpeed / maxSpeed));
+        api.applyLocalForce([0, 0, -engineForce], [0, 0, 0]); 
+      }
+      
+      if (controls.backward) {
+        const reverseForce = forwardSpeed > 0 ? -100000 : -60000;
+        api.applyLocalForce([0, 0, -reverseForce], [0, 0, 0]);
+      }
+
+      if (controls.brake) {
+        const brakeForce = currentVel.clone().normalize().multiplyScalar(-150000);
+        api.applyForce([brakeForce.x, 0, brakeForce.z], [0, 0, 0]);
+      }
     }
 
-    if (controls.brake) {
-      const brakeForce = currentVel.clone().normalize().multiplyScalar(-150000);
-      api.applyForce([brakeForce.x, 0, brakeForce.z], [0, 0, 0]);
-    }
-
-    // Steering logic
+    // Steering logic & Weight Transfer
     const isReversing = forwardSpeed < -0.1;
     const steerMultiplier = isReversing ? -1 : 1;
     
+    // Weight transfer effects on steering:
+    // Braking gives more front grip (oversteer / better turn in)
+    // Accelerating gives less front grip (understeer)
+    const weightTransferModifier = 1.0 - (longitudinalG * 0.15);
+    
     // Tighter steering at low speed, more stable at high speed
-    let turnRate = 4.5 / (1.0 + (Math.abs(forwardSpeed) / 10));
-    if (speed < 0.5 && !controls.forward && !controls.backward) turnRate = 0;
+    let baseTurnRate = steeringSensitivity / (1.0 + (Math.abs(forwardSpeed) / 10));
+    let turnRate = baseTurnRate * Math.max(0.5, Math.min(1.5, weightTransferModifier));
+    
+    if (speed < 0.5 && (!controls.forward || freecam) && (!controls.backward || freecam)) turnRate = 0;
 
     let steerDir = 0;
-    if (controls.left) steerDir = 1;
-    if (controls.right) steerDir = -1;
+    if (!freecam) {
+      if (controls.left) steerDir = 1;
+      if (controls.right) steerDir = -1;
+    }
 
     // Visual Steering and Wheel Rotation
     const targetSteerAngle = steerDir * 0.5;
@@ -145,11 +164,33 @@ export function Car() {
     const lateralVel = currentVel.clone().sub(localZ.clone().multiplyScalar(forwardSpeed));
     const lateralSpeed = lateralVel.length();
     
-    // Slip angle simulation - grip drops off if lateral speed is too high
-    const maxGripSpeed = 12;
-    const gripFactor = controls.brake ? 0.3 : (lateralSpeed > maxGripSpeed ? 0.5 : 1.0);
+    // Tire Temperature & Wear updates
+    // Slip energy generates heat.
+    const slipSpeed = lateralSpeed + (controls.brake ? speed * 0.3 : 0) + (controls.forward && speed < 5 ? 5 : 0);
+    const heating = slipSpeed * 1.5 * delta;
+    const cooling = (tireTemp.current - 20) * 0.5 * delta; // Cools down towards ambient (20C)
+    
+    tireTemp.current += heating - cooling;
+    tireTemp.current = Math.max(20, Math.min(150, tireTemp.current)); // Hard limits
+    
+    // Tire wear depends on slip speed and tire temp
+    const wearRate = (slipSpeed * (tireTemp.current / 100)) * 0.0005 * delta;
+    tireWear.current = Math.max(0.1, tireWear.current - wearRate);
+
+    // Temp modifier: peak grip around 90C
+    const tempFactor = Math.max(0.6, 1.0 - Math.pow((tireTemp.current - 90) / 80, 2));
+    
+    // Slip angle simulation - grip drops off based on Pacejka-like curve
+    const maxGripSpeed = 8 + (tireWear.current * 4); // Worn tires lose grip sooner
+    let slipFactor = 1.0;
+    if (lateralSpeed > maxGripSpeed) {
+       slipFactor = Math.max(0.3, 1.0 - ((lateralSpeed - maxGripSpeed) * 0.05));
+    }
+    // Brake lock up factor
+    const brakeFactor = controls.brake ? 0.35 : 1.0;
+
     const baseGrip = 35000;
-    const appliedGrip = baseGrip * gripFactor;
+    const appliedGrip = baseGrip * slipFactor * brakeFactor * tempFactor * tireWear.current;
     
     api.applyForce([-lateralVel.x * appliedGrip, 0, -lateralVel.z * appliedGrip], [0, 0, 0]);
 
@@ -180,19 +221,21 @@ export function Car() {
       api.velocity.set(0, 0, 0);
     }
 
-    // Keep camera behind car smoothly
-    const carPos = new THREE.Vector3(...position.current);
-    // Adjust camera properties dynamically based on speed
-    const camDist = 9 + (speed / maxSpeed) * 6;
-    const camOffset = new THREE.Vector3(0, 3.5 + (speed / maxSpeed) * 1.5, camDist);
-    camOffset.applyEuler(euler);
-    const targetCamPos = carPos.clone().add(camOffset);
-    
-    camera.position.lerp(targetCamPos, 0.1);
-    
-    // Look slightly ahead of the car based on velocity
-    const lookAhead = carPos.clone().add(currentVel.clone().multiplyScalar(0.2));
-    camera.lookAt(lookAhead);
+    if (!freecam) {
+      // Keep camera behind car smoothly
+      const carPos = new THREE.Vector3(...position.current);
+      // Adjust camera properties dynamically based on speed
+      const camDist = 9 + (speed / maxSpeed) * 6;
+      const camOffset = new THREE.Vector3(0, 3.5 + (speed / maxSpeed) * 1.5, camDist);
+      camOffset.applyEuler(euler);
+      const targetCamPos = carPos.clone().add(camOffset);
+      
+      camera.position.lerp(targetCamPos, 0.1);
+      
+      // Look slightly ahead of the car based on velocity
+      const lookAhead = carPos.clone().add(currentVel.clone().multiplyScalar(0.2));
+      camera.lookAt(lookAhead);
+    }
 
     // Update real DOM minimap dot
     const dot = document.getElementById('minimap-player-dot');
@@ -203,24 +246,36 @@ export function Car() {
       dot.style.top = `${pz}px`;
     }
 
-    // Update speedometer
+    // Update speedometer & tire stats
     const speedEl = document.getElementById('speedOMeter');
     if (speedEl) {
       speedEl.innerText = Math.round(speed * 3.6).toString().padStart(3, '0');
     }
+    const tireTempEl = document.getElementById('tireTempMeter');
+    if (tireTempEl) {
+      tireTempEl.innerText = Math.round(tireTemp.current) + '°C';
+      if (tireTemp.current > 120) tireTempEl.className = "text-xl font-bold tabular-nums text-red-500";
+      else if (tireTemp.current > 80) tireTempEl.className = "text-xl font-bold tabular-nums text-emerald-400";
+      else tireTempEl.className = "text-xl font-bold tabular-nums text-orange-400";
+    }
+    const tireWearEl = document.getElementById('tireWearMeter');
+    if (tireWearEl) {
+      tireWearEl.innerText = Math.round(tireWear.current * 100) + '%';
+      if (tireWear.current < 0.3) tireWearEl.className = "text-xl font-bold tabular-nums text-red-500";
+      else if (tireWear.current < 0.7) tireWearEl.className = "text-xl font-bold tabular-nums text-yellow-400";
+      else tireWearEl.className = "text-xl font-bold tabular-nums text-emerald-400";
+    }
 
     // Suspension Visuals: Body Roll and Pitch
-    const lateralG = (angularVelocity.current[1] * forwardSpeed) / 9.81;
-    const longitudinalG = accel / 9.81;
-
     bodyRoll.current = THREE.MathUtils.lerp(bodyRoll.current, lateralG * 0.12, 0.1);
     bodyPitch.current = THREE.MathUtils.lerp(bodyPitch.current, longitudinalG * 0.08, 0.1);
 
     if (chassisRef.current) {
       chassisRef.current.rotation.x = bodyPitch.current;
       chassisRef.current.rotation.z = -bodyRoll.current;
-      // Slight vertical compression under load
-      chassisRef.current.position.y = -Math.abs(bodyRoll.current) * 0.1 - Math.abs(bodyPitch.current) * 0.05;
+      // Slight vertical compression under load and speed vibration
+      const vibration = speed > 5 ? (Math.random() - 0.5) * 0.03 * (speed / maxSpeed) : 0;
+      chassisRef.current.position.y = -Math.abs(bodyRoll.current) * 0.1 - Math.abs(bodyPitch.current) * 0.05 + vibration;
     }
   });
 
